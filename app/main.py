@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 
 import pandas as pd
@@ -8,6 +9,14 @@ from pdf_extractor import extract_text_from_pdf_bytes
 from text_cleaner import clean_text, field_value_to_points
 from swift_parser import parse_lc_document
 from lc_mapper import build_summary, build_fields_dataframe, build_metadata_dataframe
+from salesforce_service import (
+    SalesforceConfigError,
+    build_letter_of_credit_payload,
+    create_letter_of_credit_with_checklists_from_config,
+    find_duplicate_letter_of_credit_records_from_config,
+    load_salesforce_config,
+    parse_additional_fields_json,
+)
 from export_services import (
     dataframe_to_csv_bytes,
     build_summary_csv_bytes,
@@ -27,6 +36,16 @@ CHECKLIST_CODES = {
     "46A": "Documents Required",
     "47A": "Additional Conditions",
 }
+REQUIRED_SALESFORCE_FIELDS = [
+    "APPLICANT_BANK_F51A__c",
+    "DOC_CREDIT_NUMBER_20__c",
+    "Issuing_Bank__c",
+    "LC_Trade_Terms__c",
+    "PERIOD_FOR_PRESENTATION_48__c",
+]
+DUPLICATE_WARNING_FIELDS = [
+    "DOC_CREDIT_NUMBER_20__c",
+]
 
 
 def render_app_styles():
@@ -227,8 +246,18 @@ def get_checklist_points(parsed: dict, code: str):
     return []
 
 
+def get_selected_checklist_points(document_key: str, code: str, points: list[str]) -> list[str]:
+    selected_points = []
+
+    for idx, point in enumerate(points, start=1):
+        if st.session_state.get(f"checklist_{document_key}_{code}_{idx}", False):
+            selected_points.append(str(point or "").strip())
+
+    return [point for point in selected_points if point]
+
+
 def strip_leading_point_marker(text: str) -> str:
-    cleaned = re.sub(r"^\s*[+*-]?\s*\d{1,2}[.)]\s*", "", str(text or "")).strip()
+    cleaned = re.sub(r"^\s*[+*]?\s*\d{1,2}\s*[.)-]\s*", "", str(text or "")).strip()
     return cleaned or str(text or "").strip()
 
 
@@ -276,6 +305,181 @@ def render_checklist_group(document_key: str, code: str, field_name: str, points
         st.caption(f"Completed: {checked_count}/{len(points)}")
 
 
+def render_salesforce_sync_section(
+    parsed: dict,
+    document_key: str,
+    checklist_points_by_code: dict[str, list[str]],
+):
+    st.subheader("Salesforce Sync")
+
+    salesforce_config = None
+    additional_fields = {}
+    additional_fields_error = ""
+
+    try:
+        salesforce_config = load_salesforce_config(st.secrets)
+        additional_fields = parse_additional_fields_json(
+            salesforce_config.get("default_create_fields_json", "{}")
+        )
+    except FileNotFoundError:
+        st.info(
+            "No Streamlit secrets file was found. Add `.streamlit/secrets.toml` "
+            "in the app run directory or in your user home `.streamlit` folder "
+            "to enable Salesforce sync."
+        )
+    except SalesforceConfigError as exc:
+        st.info(str(exc))
+    except ValueError as exc:
+        additional_fields_error = str(exc)
+        st.error(additional_fields_error)
+
+    payload = build_letter_of_credit_payload(parsed, additional_fields)
+    selected_checklist_points_by_code = {
+        code: get_selected_checklist_points(document_key, code, points)
+        for code, points in checklist_points_by_code.items()
+    }
+    missing_required_fields = [
+        field_name
+        for field_name in REQUIRED_SALESFORCE_FIELDS
+        if field_name not in payload or payload.get(field_name) in ("", None)
+    ]
+
+    if missing_required_fields:
+        st.error(
+            "Some required Salesforce fields are still missing from the mapped payload: "
+            + ", ".join(missing_required_fields)
+        )
+
+    duplicate_records = []
+    duplicate_signature = json.dumps(
+        {
+            "object_api_name": (salesforce_config or {}).get("object_api_name", ""),
+            "doc_credit_number": payload.get("DOC_CREDIT_NUMBER_20__c", ""),
+            "advising_bank_reference": payload.get("Adving_Bank_Reference__c", ""),
+        },
+        sort_keys=True,
+    )
+
+    has_duplicate_lookup_values = any(
+        str(payload.get(field_name, "") or "").strip()
+        for field_name in DUPLICATE_WARNING_FIELDS
+    )
+
+    if salesforce_config is not None and payload and has_duplicate_lookup_values:
+        cached_signature = st.session_state.get("salesforce_duplicate_check_signature", "")
+        if cached_signature != duplicate_signature:
+            with st.spinner("Checking Salesforce for matching Letter of Credit records..."):
+                st.session_state["salesforce_duplicate_check_result"] = (
+                    find_duplicate_letter_of_credit_records_from_config(
+                        config=salesforce_config,
+                        payload=payload,
+                    )
+                )
+            st.session_state["salesforce_duplicate_check_signature"] = duplicate_signature
+
+        duplicate_check_result = st.session_state.get("salesforce_duplicate_check_result", {})
+        duplicate_records = list(duplicate_check_result.get("records", []))
+
+        if duplicate_check_result.get("ok", False):
+            if duplicate_records:
+                st.warning(
+                    "Salesforce already has Letter of Credit record(s) with the same "
+                    "document credit number. Review them below before creating another record."
+                )
+
+                duplicate_preview_rows = [
+                    {
+                        "Record ID": record.get("Id", ""),
+                        "Matched On": ", ".join(record.get("matched_on", [])),
+                        "DOC_CREDIT_NUMBER_20__c": record.get("DOC_CREDIT_NUMBER_20__c", ""),
+                        "Adving_Bank_Reference__c": record.get("Adving_Bank_Reference__c", ""),
+                        "Issuing_Bank__c": record.get("Issuing_Bank__c", ""),
+                        "CreatedDate": record.get("CreatedDate", ""),
+                    }
+                    for record in duplicate_records
+                ]
+                st.dataframe(
+                    pd.DataFrame(duplicate_preview_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                for record in duplicate_records:
+                    if record.get("record_url"):
+                        st.markdown(
+                            f"- [Open Salesforce record {record.get('Id', '')}]"
+                            f"({record['record_url']})"
+                        )
+        else:
+            st.warning("The Salesforce duplicate check could not be completed.")
+            if duplicate_check_result.get("status_code") is not None:
+                st.caption(f"HTTP status: {duplicate_check_result['status_code']}")
+            st.json(duplicate_check_result.get("data", {}))
+
+    proceed_with_duplicate = True
+    if duplicate_records:
+        proceed_with_duplicate = st.checkbox(
+            "I understand this Letter of Credit may already exist in Salesforce and still want to create another record.",
+            key=f"salesforce_duplicate_override_{duplicate_signature}",
+        )
+
+    create_disabled = (
+        salesforce_config is None
+        or bool(additional_fields_error)
+        or not payload
+        or bool(missing_required_fields)
+        or (bool(duplicate_records) and not proceed_with_duplicate)
+    )
+
+    if st.button("Create Salesforce Letter of Credit record", disabled=create_disabled):
+        with st.spinner("Creating Salesforce record..."):
+            result = create_letter_of_credit_with_checklists_from_config(
+                config=salesforce_config,
+                lc_payload=payload,
+                selected_points_by_code=selected_checklist_points_by_code,
+            )
+
+        parent_result = result.get("parent_result", {})
+        child_results = list(result.get("child_results", []))
+
+        if result["ok"]:
+            record_id = parent_result.get("record_id", "")
+            success_message = "Salesforce record created successfully."
+            if record_id:
+                success_message += f" Record ID: {record_id}"
+            if child_results:
+                success_message += (
+                    f" Created {result.get('created_child_count', 0)} related 46A / 47A record(s)."
+                )
+            st.success(success_message)
+
+            if parent_result.get("record_url"):
+                st.markdown(f"[Open record in Salesforce]({parent_result['record_url']})")
+        elif parent_result.get("ok", False):
+            record_id = parent_result.get("record_id", "")
+            st.warning(
+                "The parent Letter of Credit record was created, but some related 46A / 47A "
+                "records could not be created."
+                + (f" Parent Record ID: {record_id}" if record_id else "")
+            )
+
+            if parent_result.get("record_url"):
+                st.markdown(f"[Open parent record in Salesforce]({parent_result['record_url']})")
+
+            for child_result in child_results:
+                if not child_result.get("ok", False):
+                    st.caption(
+                        f"{child_result.get('object_api_name', '')} "
+                        f"{child_result.get('code', '')}-{child_result.get('sequence_number', '')}"
+                    )
+                    st.json(child_result.get("data", {}))
+        else:
+            st.error("Salesforce record creation failed.")
+            if parent_result.get("status_code") is not None:
+                st.caption(f"HTTP status: {parent_result['status_code']}")
+            st.json(parent_result.get("data", {}))
+
+
 def main():
     render_app_styles()
 
@@ -303,7 +507,6 @@ def main():
         document_key = get_document_key(cleaned_text)
         summary = build_summary(parsed)
         fields_df = build_fields_dataframe(parsed, expand_rows=True)
-        full_fields_df = build_fields_dataframe(parsed, expand_rows=False)
         metadata_df = build_metadata_dataframe(parsed)
         summary_df = pd.DataFrame([summary])
 
@@ -311,35 +514,6 @@ def main():
 
     st.subheader("Summary")
     show_summary_cards(summary)
-
-    st.subheader("Summary Table")
-    st.dataframe(summary_df, use_container_width=True)
-
-    st.subheader("Message Metadata / Parties / SWIFT Blocks")
-    st.dataframe(metadata_df, use_container_width=True, height=350)
-
-    st.subheader("SWIFT Field-wise Extraction")
-    if not fields_df.empty:
-        table_df = fields_df.assign(
-            Value=fields_df["Value"].fillna("").astype(str).str.replace("\n", " | ", regex=False)
-        )[[col for col in ["Code", "Field Name", "Value"] if col in fields_df.columns]]
-        max_value_len = int(table_df["Value"].str.len().max()) if not table_df.empty else 0
-        value_col_width = min(max(max_value_len * 8, 2200), 12000)
-
-        st.caption("Scroll horizontally in the table to read the full field value.")
-        st.dataframe(
-            table_df,
-            use_container_width=True,
-            hide_index=True,
-            height=420,
-            column_config={
-                "Code": st.column_config.TextColumn("Code", width=90),
-                "Field Name": st.column_config.TextColumn("Field Name", width=260),
-                "Value": st.column_config.TextColumn("Value", width=value_col_width),
-            },
-        )
-    else:
-        st.warning("No SWIFT fields found.")
 
     st.subheader("46A / 47A Checklist")
     st.caption("The checklist is generated from the numbered points found in the uploaded LC.")
@@ -373,46 +547,11 @@ def main():
             points=checklist_points_by_code[code],
         )
 
-    st.subheader("Read Full Field")
-
-    if not full_fields_df.empty:
-        # Safer unique display options using row index
-        field_options = [
-            f"{idx} | {row['Code']} - {row['Field Name']}"
-            for idx, row in full_fields_df.iterrows()
-        ]
-
-        selected_option = st.selectbox(
-            "Choose a field to read in full",
-            options=field_options
-        )
-
-        selected_idx = int(selected_option.split(" | ", 1)[0])
-        selected_row = full_fields_df.loc[selected_idx]
-
-        with st.container(border=True):
-            st.markdown(f"**{selected_row['Code']} - {selected_row['Field Name']}**")
-            st.text_area(
-                "Full field value",
-                value=str(selected_row["Value"]),
-                height=260,
-                disabled=True,
-                label_visibility="collapsed",
-            )
-
-    st.subheader("Detailed Field View")
-
-    if not full_fields_df.empty:
-        for idx, row in full_fields_df.iterrows():
-            code = row["Code"]
-            field_name = row["Field Name"]
-            value = row["Value"]
-
-            with st.expander(f"{idx} | {code} - {field_name}", expanded=False):
-                render_field_block(code, field_name, value)
-
-    with st.expander("Raw Extracted Text"):
-        st.code(cleaned_text, language=None)
+    render_salesforce_sync_section(
+        parsed=parsed,
+        document_key=document_key,
+        checklist_points_by_code=checklist_points_by_code,
+    )
 
     st.subheader("Download Exports")
 

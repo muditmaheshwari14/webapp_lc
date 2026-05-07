@@ -4,7 +4,21 @@ import re
 POINT_STRUCTURED_CODES = {"45A", "46A", "47A", "71D", "78", "72Z"}
 EXPANDED_POINT_ROW_CODES = {"46A", "47A"}
 FIELD_CODE_WITH_POINT_PATTERN = re.compile(r"^([0-9]{2}[A-Z]?)(\d+)?$")
-POINT_MARKER_PATTERN = re.compile(r"(?m)(^|\s)(\d{1,2})([.)])")
+POINT_MARKER_PATTERN = re.compile(
+    r"""
+    (?m)
+    (?<!\S)
+    (?P<prefix>[+*]?)
+    \s*
+    (?P<number>\d{1,2})
+    (?P<delimiter>[.)-])
+    (?=\s|[A-Za-z])
+    """,
+    re.VERBOSE,
+)
+LEADING_POINT_MARKER_PATTERN = re.compile(
+    r"^\s*[+*]?\s*(\d{1,2})\s*[.)-]\s*",
+)
 
 
 def clean_text(text: str) -> str:
@@ -104,53 +118,165 @@ def should_expand_field_rows(code: str) -> bool:
     return get_base_field_code(code) in EXPANDED_POINT_ROW_CODES
 
 
+def _is_line_start(text: str, position: int) -> bool:
+    line_start = text.rfind("\n", 0, position) + 1
+    return not text[line_start:position].strip()
+
+
+def _find_point_candidates(text: str):
+    candidates = []
+
+    for match in POINT_MARKER_PATTERN.finditer(text):
+        marker_start = match.start()
+        prefix = match.group("prefix") or ""
+
+        candidates.append(
+            {
+                "start": marker_start,
+                "number": int(match.group("number")),
+                "prefix": prefix,
+                "delimiter": match.group("delimiter"),
+                "line_start": _is_line_start(text, marker_start),
+            }
+        )
+
+    return candidates
+
+
+def _candidate_modes(candidates):
+    modes = []
+    explicit_prefixes = sorted({candidate["prefix"] for candidate in candidates if candidate["prefix"]})
+
+    for prefix in explicit_prefixes:
+        modes.append(("prefix", prefix))
+
+    if any(not candidate["prefix"] and candidate["line_start"] for candidate in candidates):
+        modes.append(("line_start", ""))
+
+    if any(not candidate["prefix"] and not candidate["line_start"] for candidate in candidates):
+        modes.append(("inline", ""))
+
+    if any(not candidate["prefix"] for candidate in candidates):
+        modes.append(("no_prefix_any", ""))
+
+    return modes
+
+
+def _candidate_matches_mode(candidate, mode):
+    mode_name, mode_value = mode
+
+    if mode_name == "prefix":
+        return candidate["prefix"] == mode_value
+    if mode_name == "line_start":
+        return not candidate["prefix"] and candidate["line_start"]
+    if mode_name == "inline":
+        return not candidate["prefix"] and not candidate["line_start"]
+    if mode_name == "no_prefix_any":
+        return not candidate["prefix"]
+
+    return False
+
+
+def _build_best_chain(candidates):
+    if not candidates:
+        return []
+
+    filtered_candidates = sorted(candidates, key=lambda candidate: candidate["start"])
+    best_chain_by_index = {}
+
+    for idx in range(len(filtered_candidates) - 1, -1, -1):
+        current = filtered_candidates[idx]
+        best_following_chain = []
+
+        for next_idx in range(idx + 1, len(filtered_candidates)):
+            next_candidate = filtered_candidates[next_idx]
+            if next_candidate["number"] != current["number"] + 1:
+                continue
+
+            following_chain = best_chain_by_index[next_idx]
+            candidate_chain = [current, *following_chain]
+            best_candidate_chain = [current, *best_following_chain]
+
+            if len(candidate_chain) > len(best_candidate_chain):
+                best_following_chain = following_chain
+                continue
+
+            if len(candidate_chain) == len(best_candidate_chain):
+                current_end = candidate_chain[-1]["start"]
+                best_end = best_candidate_chain[-1]["start"]
+                if current_end > best_end:
+                    best_following_chain = following_chain
+
+        best_chain_by_index[idx] = [current, *best_following_chain]
+
+    return max(best_chain_by_index.values(), key=_score_chain, default=[])
+
+
+def _score_chain(chain):
+    if not chain:
+        return float("-inf")
+
+    first = chain[0]
+    last = chain[-1]
+    coverage = last["start"] - first["start"]
+
+    score = (len(chain) * 500) + coverage
+    if first["number"] == 1:
+        score += 250
+    if first["start"] <= 40:
+        score += 100
+    if first["prefix"]:
+        score += 150
+        if first["start"] <= 40 and len(chain) >= 2:
+            score += 1500
+    if first["line_start"]:
+        score += 50
+
+    return score
+
+
 def split_numbered_points(value: str):
     """
     Split text into numbered items like:
     1.
     2)
     3)
-    Also handles text before the first numbered item.
+    4-
+    +5.
+    Also handles text before the first numbered item and prefers
+    the dominant top-level sequence when nested sub-points exist.
     """
     if not value:
         return []
 
     text = value.strip()
-    matches = [
-        (match.start(2), int(match.group(2)))
-        for match in POINT_MARKER_PATTERN.finditer(text)
-    ]
+    candidates = _find_point_candidates(text)
 
-    if not matches:
+    if not candidates:
         return [text]
 
     split_positions = []
     best_chain = []
 
-    for idx, (start_pos, number) in enumerate(matches):
-        chain = [start_pos]
-        expected = number
-
-        for next_start_pos, next_number in matches[idx + 1:]:
-            if next_number == expected + 1:
-                chain.append(next_start_pos)
-                expected = next_number
-
-        if (
-            len(chain) > len(best_chain)
-            or (len(chain) == len(best_chain) and number == 1 and best_chain)
-        ):
-            best_chain = chain
+    for mode in _candidate_modes(candidates):
+        mode_candidates = [
+            candidate
+            for candidate in candidates
+            if _candidate_matches_mode(candidate, mode)
+        ]
+        candidate_chain = _build_best_chain(mode_candidates)
+        if _score_chain(candidate_chain) > _score_chain(best_chain):
+            best_chain = candidate_chain
 
     if len(best_chain) >= 2:
-        split_positions = best_chain
-    elif matches[0][0] == 0:
-        split_positions = [matches[0][0]]
+        split_positions = [candidate["start"] for candidate in best_chain]
+    elif candidates[0]["start"] == 0:
+        split_positions = [candidates[0]["start"]]
     else:
         split_positions = [
-            start_pos
-            for start_pos, _ in matches
-            if start_pos == 0 or text[start_pos - 1] == "\n"
+            candidate["start"]
+            for candidate in candidates
+            if candidate["line_start"] or candidate["prefix"]
         ]
 
     if not split_positions:
@@ -176,7 +302,13 @@ def renumber_point_for_display(point_text: str) -> str:
     """
     Normalize leading numbering to '1)'
     """
-    return re.sub(r'^(\d+)[.)]', r'\1)', point_text.strip())
+    stripped = point_text.strip()
+
+    def _replace(match: re.Match) -> str:
+        number = int(match.group(1))
+        return f"{number}) "
+
+    return LEADING_POINT_MARKER_PATTERN.sub(_replace, stripped, count=1).strip()
 
 
 def format_field_for_display(code: str, value: str) -> str:
