@@ -5,10 +5,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 
-from text_cleaner import field_value_to_points, format_field_for_display, split_numbered_points
+from text_cleaner import (
+    contains_stale_keyword,
+    field_value_to_points,
+    format_field_for_display,
+    split_numbered_points,
+)
 
 
 class SplitNumberedPointsTests(unittest.TestCase):
+    def test_contains_stale_keyword_matches_word_case_insensitively(self):
+        self.assertTrue(contains_stale_keyword("Presentation of stale documents is not acceptable"))
+        self.assertTrue(contains_stale_keyword("STALE DOCUMENTS"))
+        self.assertFalse(contains_stale_keyword("installation details"))
+
     def test_splits_plus_prefixed_inline_points(self):
         value = (
             "+1. SHIPMENT/TRANSSHIPMENT ON ISRAELI AND INDIAN FLAG VESSELS ARE NOT ALLOWED. "

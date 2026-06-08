@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from pdf_extractor import extract_text_from_pdf_bytes
-from text_cleaner import clean_text, field_value_to_points
+from text_cleaner import clean_text, contains_stale_keyword, field_value_to_points
 from swift_parser import parse_lc_document
 from lc_mapper import build_summary, build_fields_dataframe, build_metadata_dataframe
 from salesforce_service import (
@@ -261,8 +261,19 @@ def strip_leading_point_marker(text: str) -> str:
     return cleaned or str(text or "").strip()
 
 
+def initialize_checklist_defaults(document_key: str, code: str, points: list[str]) -> None:
+    for idx, point in enumerate(points, start=1):
+        checkbox_key = f"checklist_{document_key}_{code}_{idx}"
+        if checkbox_key in st.session_state:
+            continue
+
+        st.session_state[checkbox_key] = contains_stale_keyword(point)
+
+
 def render_checklist_group(document_key: str, code: str, field_name: str, points: list[str]):
     title = f"{code} - {field_name}"
+
+    initialize_checklist_defaults(document_key=document_key, code=code, points=points)
 
     checked_count = sum(
         1 for idx in range(1, len(points) + 1)

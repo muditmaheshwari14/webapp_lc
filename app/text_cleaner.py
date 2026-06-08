@@ -32,6 +32,10 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def contains_stale_keyword(text: str) -> bool:
+    return bool(re.search(r"\bstale\b", str(text or ""), re.IGNORECASE))
+
+
 def remove_classification_lines(value: str) -> str:
     lines = []
     for line in value.splitlines():
