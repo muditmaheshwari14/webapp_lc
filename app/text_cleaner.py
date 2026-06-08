@@ -53,45 +53,53 @@ def remove_dot_separator_lines(value: str) -> str:
 
 def remove_leading_field_label(code: str, value: str) -> str:
     known_prefixes = {
-        "27": "Sequence Of Total",
-        "40A": "Form of Documentary Credit",
-        "20": "Documentary Credit Number",
-        "31C": "Date Of Issue",
-        "40E": "Applicable Rules",
-        "31D": "Date and Place of Expiry",
-        "51A": "Applicant Bank",
-        "50": "Applicant",
-        "59": "Beneficiary",
-        "32B": "Currency Code, Amount",
-        "39A": "Percentage Credit Amount Tolerance",
-        "41D": "Available With ... By ...",
-        "42C": "Drafts At",
-        "42A": "Drawee",
-        "43P": "Partial Shipments",
-        "43T": "Transhipment",
-        "44E": "Port of Loading/Airport of Departure",
-        "44F": "Port of Discharge/Airport of Destination",
-        "44C": "Latest Date of Shipment",
-        "45A": "Description of Goods and/or Services",
-        "46A": "Documents Required",
-        "47A": "Additional Conditions",
-        "71D": "Details of Charges",
-        "48": "Period for Presentation",
-        "49": "Confirmation Instructions",
-        "78": "Instructions to the Paying/Accepting/Negotiating Bank",
-        "72Z": "Sender to Receiver Information / Additional Narrative",
+        "27": ("Sequence Of Total",),
+        "40A": ("Form of Documentary Credit",),
+        "20": ("Documentary Credit Number",),
+        "31C": ("Date Of Issue",),
+        "40E": ("Applicable Rules",),
+        "31D": ("Date and Place of Expiry",),
+        "51A": ("Applicant Bank",),
+        "51D": ("Initializing Institution (Name and Address)",),
+        "50": ("Applicant",),
+        "59": ("Beneficiary",),
+        "32B": ("Currency Code, Amount",),
+        "39A": ("Percentage Credit Amount Tolerance",),
+        "41D": ("Available With ... By ...", "Available With... By..."),
+        "42C": ("Drafts At", "Drafts at"),
+        "42A": ("Drawee",),
+        "42D": ("Drawee", "Drawee (Name and Address)"),
+        "43P": ("Partial Shipments",),
+        "43T": ("Transhipment",),
+        "44E": ("Port of Loading/Airport of Departure",),
+        "44F": ("Port of Discharge/Airport of Destination",),
+        "44C": ("Latest Date of Shipment",),
+        "45A": ("Description of Goods and/or Services",),
+        "46A": ("Documents Required",),
+        "47A": ("Additional Conditions",),
+        "71D": ("Details of Charges", "Charges"),
+        "48": ("Period For Presentation in Days", "Period for Presentation"),
+        "49": ("Confirmation Instructions",),
+        "78": ("Instructions to the Paying/Accepting/Negotiating Bank",),
+        "72Z": ("Sender to Receiver Information / Additional Narrative",),
     }
 
-    prefix = known_prefixes.get(get_base_field_code(code), "").strip()
-    if not prefix:
+    prefixes = known_prefixes.get(get_base_field_code(code), ())
+    if not prefixes:
         return value.strip()
 
     normalized_value = " ".join(value.split())
-    normalized_prefix = " ".join(prefix.split())
-
-    if normalized_value.lower().startswith(normalized_prefix.lower()):
-        trimmed = normalized_value[len(normalized_prefix):].strip(" :.-")
-        return trimmed
+    for prefix in prefixes:
+        normalized_prefix = " ".join(prefix.split())
+        if normalized_value.lower().startswith(normalized_prefix.lower()):
+            trimmed = normalized_value[len(normalized_prefix):].strip(" :.-")
+            trimmed = re.sub(
+                r"^\(\s*NAME\s+AND\s+ADDRESS\s*\)\s*",
+                "",
+                trimmed,
+                flags=re.IGNORECASE,
+            )
+            return trimmed
 
     return value.strip()
 

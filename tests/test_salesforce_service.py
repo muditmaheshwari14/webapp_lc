@@ -236,12 +236,60 @@ class SalesforceServiceTests(unittest.TestCase):
         self.assertEqual(
             payload,
             {
+                "APPLICANT_BANK_F51A__c": "BKIPPKKAXXX BANKISLAMI PAKISTAN LIMITED KARACHI PK",
                 "DOC_CREDIT_NUMBER_20__c": "2070/SLC/1072/26",
                 "PERIOD_FOR_PRESENTATION_48__c": 30,
                 "Issuing_Bank__c": "BANKISLAMI PAKISTAN LIMITED KARACHI",
                 "LC_Trade_Terms__c": "CFR PORT QASIM, PAKISTAN",
             },
         )
+
+    def test_build_payload_uses_sender_and_46a_fallbacks_for_uk_style_lc(self):
+        parsed = {
+            "advice_details": {
+                "advice_date": "June 02, 2026",
+                "our_ref": "DCAUKA012718",
+                "top_amount": "USD 185,000.00",
+                "top_issuing_bank": "SUMITOMO MITSUI BANKING CORPORATION",
+                "top_issuing_bank_lc_no": "TF2614900006",
+            },
+            "sender": {
+                "bic": "SMBCSGSGXXX",
+                "name": "SUMITOMO MITSUI BANKING CORPORATION",
+            },
+            "fields": {
+                "20": "TF2614900006",
+                "31C": "260529",
+                "31D": "260714AT NEGOTIATING BANK'S COUNTER",
+                "32B": "USD185000,00",
+                "41D": "ANY BANK IN UNITED KINGDOM BY NEGOTIATION",
+                "42D": "SUMITOMO MITSUI BANKING CORPORATION 88 MARKET STREET, HEX33-01 CAPITASPRING SINGAPORE 048948",
+                "44C": "260630",
+                "44E": "ANY PORT IN NORWAY",
+                "44F": "CAI MEP PORT, VUNG TAU, VIETNAM",
+                "45A": "COMMODITY : RAILROAD FERROUS SCRAP QUALITY : RAIL, STEEL NO. 1-3 AS PER ISRI CODE 27-29 QUANTITY : 500 MT (+/-5PCT) UNIT PRICE : USD370.00/MT DELIVERY TERMS : CFR CAI MEP PORT, VUNG TAU, VIETNAM (INCOTERMS 2010)",
+                "46A": "1) SIGNED COMMERCIAL INVOICE. 2) CLEAN SHIPPED ON BOARD BILLS OF LADING SHOWING HS CODE: 72044900.",
+                "48": "14/DAYS AFTER THE DATE OF SHIPMENT",
+                "49": "WITHOUT",
+                "50": "HANWA SINGAPORE (PTE) LTD ONE RAFFLES PLACE, HEX11-61 TOWER 2, SINGAPORE 048616",
+                "59": "NOBLE ARTIS PVT LTD 79 COLLEGE ROAD HARROW, LONDON HA1 1BD UNITED KINGDOM",
+            },
+        }
+
+        payload = build_letter_of_credit_payload(parsed)
+
+        self.assertEqual(payload["Advisng_Date__c"], "2026-06-02")
+        self.assertEqual(payload["Adving_Bank_Reference__c"], "DCAUKA012718")
+        self.assertEqual(
+            payload["APPLICANT_BANK_F51A__c"],
+            "SMBCSGSGXXX SUMITOMO MITSUI BANKING CORPORATION",
+        )
+        self.assertEqual(payload["Issuing_Bank__c"], "SUMITOMO MITSUI BANKING CORPORATION")
+        self.assertEqual(payload["DRAWEE_42A__c"], parsed["fields"]["42D"])
+        self.assertEqual(payload["HS_CODE_45A__c"], "72044900")
+        self.assertEqual(payload["BL_Goods_Description__c"], "RAILROAD FERROUS SCRAP")
+        self.assertEqual(payload["LC_Trade_Terms__c"], "CFR CAI MEP PORT, VUNG TAU, VIETNAM")
+        self.assertEqual(payload["PERIOD_FOR_PRESENTATION_48__c"], 14)
 
     def test_build_duplicate_letter_of_credit_query_uses_only_doc_number(self):
         query = build_duplicate_letter_of_credit_query(

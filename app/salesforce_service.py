@@ -118,6 +118,8 @@ def _normalize_iso_date(value: Any) -> str:
         for fmt in (
             "%y%m%d",
             "%Y-%m-%d",
+            "%B %d, %Y",
+            "%b %d, %Y",
             "%d-%b-%Y",
             "%d-%b-%y",
             "%d/%m/%Y",
@@ -206,10 +208,24 @@ def _extract_trade_terms(value: Any) -> str:
 
 
 def _extract_bank_name_from_bank_block(value: Any) -> str:
-    text = _normalize_whitespace(value)
-    if not text:
+    raw_text = str(value or "").strip()
+    if not raw_text:
         return ""
 
+    lines = [line.strip(" ,") for line in raw_text.splitlines() if line.strip()]
+    for line in lines:
+        if re.search(r"(initiali[sz]ing institution|name and address|drawee|applicant bank)", line, re.IGNORECASE):
+            continue
+
+        cleaned_line = re.sub(r"^[A-Z0-9]{8,11}\s+", "", line).strip(" ,")
+        cleaned_parts = cleaned_line.split()
+        while cleaned_parts and cleaned_parts[-1].upper() in {"PK", "GB", "UK", "AE", "US", "CN", "JP", "IN", "SG", "VN"}:
+            cleaned_parts = cleaned_parts[:-1]
+        cleaned_line = " ".join(cleaned_parts).strip(" ,")
+        if cleaned_line:
+            return cleaned_line
+
+    text = _normalize_whitespace(raw_text)
     parts = text.split()
     if parts and re.fullmatch(r"[A-Z0-9]{8,11}", parts[0]):
         parts = parts[1:]
@@ -221,6 +237,17 @@ def _extract_bank_name_from_bank_block(value: Any) -> str:
         parts = parts[:-1]
 
     return " ".join(parts).strip(" ,")
+
+
+def _build_sender_bank_identity(sender: Mapping[str, Any] | None) -> str:
+    bic = _normalize_text(_get_nested_value(sender, "bic"))
+    name = _normalize_whitespace(_get_nested_value(sender, "name"))
+
+    if bic and name:
+        return f"{bic} {name}".strip()
+    if name:
+        return name
+    return bic
 
 
 def _split_available_with_by(value: Any) -> tuple[str, str]:
@@ -257,7 +284,10 @@ def _extract_goods_description(value: Any) -> str:
     if not text:
         return ""
 
+    text = re.sub(r"^COMMODITY\s*:\s*", "", text, flags=re.IGNORECASE)
+
     stop_patterns = (
+        r"\bQUALITY\b",
         r"\bQTY\b",
         r"\bQUANTITY\b",
         r"\bAT\s+USD\b",
@@ -315,11 +345,14 @@ def _extract_unit_price(value: Any) -> float | None:
 def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -> dict[str, Any]:
     fields = _get_nested_value(parsed, "fields")
     advice_details = _get_nested_value(parsed, "advice_details")
+    sender = _get_nested_value(parsed, "sender")
 
     if not isinstance(fields, Mapping):
         fields = {}
     if not isinstance(advice_details, Mapping):
         advice_details = {}
+    if not isinstance(sender, Mapping):
+        sender = {}
 
     payload: dict[str, Any] = {}
 
@@ -347,7 +380,14 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
     our_ref = _normalize_text(advice_details.get("our_ref", ""))
     set_field("Adving_Bank_Reference__c", our_ref)
 
-    applicant_bank = _first_non_empty(fields.get("51A", ""), fields.get("51D", ""))
+    applicant_bank = _first_non_empty(
+        fields.get("51A", ""),
+        fields.get("51D", ""),
+        _build_sender_bank_identity(sender),
+        _normalize_whitespace(advice_details.get("top_issuing_bank", "")),
+        fields.get("42A", ""),
+        fields.get("42D", ""),
+    )
     set_field("APPLICANT_BANK_F51A__c", applicant_bank)
 
     issue_date = _normalize_iso_date(fields.get("31C", ""))
@@ -380,7 +420,7 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
     set_field("AVAILABLE_WITH_41D__c", available_with)
     set_field("AVAILABLE_BY_41D__c", available_by)
 
-    drawee = _normalize_whitespace(fields.get("42A", ""))
+    drawee = _normalize_whitespace(_first_non_empty(fields.get("42A", ""), fields.get("42D", "")))
     set_field("DRAWEE_42A__c", drawee)
     set_field("DRAFTS_AT_42C__c", _normalize_text(fields.get("42C", "")))
     set_field("PARTIAL_SHIPMENTS_43P__c", _normalize_text(fields.get("43P", "")))
@@ -394,8 +434,12 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
     set_field("BL_Port_of_Discharge__c", discharge_port)
 
     description_of_goods = _normalize_whitespace(fields.get("45A", ""))
+    documents_required = _normalize_whitespace(fields.get("46A", ""))
     set_field("DESCRIPTION_OF_GOODS_45A__c", description_of_goods)
-    set_field("HS_CODE_45A__c", _extract_hs_code(description_of_goods))
+    set_field(
+        "HS_CODE_45A__c",
+        _first_non_empty(_extract_hs_code(description_of_goods), _extract_hs_code(documents_required)),
+    )
     set_field("LC_Trade_Terms__c", _extract_trade_terms(description_of_goods))
     set_field("SO_Price__c", _extract_unit_price(description_of_goods))
     set_field("SO_Quantity__c", _extract_quantity(description_of_goods))
@@ -419,8 +463,15 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
 
     issuing_bank = _normalize_whitespace(advice_details.get("top_issuing_bank", ""))
     if not issuing_bank:
+        issuing_bank = _normalize_whitespace(_get_nested_value(sender, "name"))
+    if not issuing_bank:
         issuing_bank = _extract_bank_name_from_bank_block(
-            _first_non_empty(fields.get("51A", ""), fields.get("51D", ""), fields.get("42A", ""))
+            _first_non_empty(
+                fields.get("51A", ""),
+                fields.get("51D", ""),
+                fields.get("42A", ""),
+                fields.get("42D", ""),
+            )
         )
     set_field("Issuing_Bank__c", issuing_bank)
 
