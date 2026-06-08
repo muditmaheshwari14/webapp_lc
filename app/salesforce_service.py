@@ -31,6 +31,7 @@ TRADE_TERM_CODES = (
     "DAP",
     "DDP",
 )
+COUNTRY_ABBREVIATIONS = {"UK", "USA", "UAE", "KSA", "PRC"}
 
 
 class SalesforceConfigError(ValueError):
@@ -347,6 +348,72 @@ def _is_at_sight_draft(value: Any) -> bool:
     return normalized in {"ATSIGHT", "SIGHT"}
 
 
+def _format_country_display(value: Any) -> str:
+    text = _normalize_whitespace(value)
+    if not text:
+        return ""
+
+    words = []
+    for word in text.split():
+        cleaned = word.strip(" ,.;:-")
+        if not cleaned:
+            continue
+
+        if cleaned.upper() in COUNTRY_ABBREVIATIONS:
+            words.append(cleaned.upper())
+        else:
+            words.append(cleaned.capitalize())
+
+    return " ".join(words).strip()
+
+
+def _extract_country_from_44e_segment(value: Any) -> str:
+    text = _normalize_whitespace(value)
+    if not text:
+        return ""
+
+    text = re.sub(
+        r"^(?:ANY\s+)?(?:PORT|AIRPORT)(?:\s+OF\s+LOADING|\s+OF\s+DEPARTURE)?\s+IN\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if "," in text:
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+        if parts:
+            text = parts[-1]
+    elif re.search(r"\bIN\b", text, re.IGNORECASE):
+        parts = [part.strip() for part in re.split(r"\bIN\b", text, flags=re.IGNORECASE) if part.strip()]
+        if parts:
+            text = parts[-1]
+
+    return _format_country_display(text)
+
+
+def _extract_origin_countries_from_44e(value: Any) -> str:
+    text = _normalize_whitespace(value)
+    if not text:
+        return ""
+
+    countries: list[str] = []
+    seen: set[str] = set()
+
+    for segment in re.split(r"\s*[\\/]+\s*", text):
+        country = _extract_country_from_44e_segment(segment)
+        if not country:
+            continue
+
+        normalized_country = country.upper()
+        if normalized_country in seen:
+            continue
+
+        seen.add(normalized_country)
+        countries.append(country)
+
+    return " and ".join(countries)
+
+
 def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -> dict[str, Any]:
     fields = _get_nested_value(parsed, "fields")
     advice_details = _get_nested_value(parsed, "advice_details")
@@ -435,7 +502,9 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
     set_field("TRANSSHIPMENT_43T__c", _normalize_text(fields.get("43T", "")))
     set_field("FINAL_DESTINATION_44B__c", _normalize_whitespace(fields.get("44B", "")))
     set_field("LATEST_SHIPMENT_DATE_44C__c", _normalize_iso_date(fields.get("44C", "")))
-    set_field("LOADING_PORT_44E__c", _normalize_whitespace(fields.get("44E", "")))
+    loading_port = _normalize_whitespace(fields.get("44E", ""))
+    set_field("LOADING_PORT_44E__c", loading_port)
+    set_field("COO_ORIGIN__c", _extract_origin_countries_from_44e(loading_port))
 
     discharge_port = _normalize_whitespace(fields.get("44F", ""))
     set_field("DISCHARGE_PORT_44F__c", discharge_port)

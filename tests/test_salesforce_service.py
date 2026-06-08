@@ -145,6 +145,7 @@ class SalesforceServiceTests(unittest.TestCase):
                 "BL_Port_of_Discharge__c": "PORT QASIM, PAKISTAN",
                 "CONFIRMATION_INSTRUCTIONS_49__c": "WITHOUT",
                 "CURRENCY_32B__c": "USD",
+                "COO_ORIGIN__c": "UK and Norway",
                 "DATE_OF_EXPIRY__c": "2026-06-20",
                 "DESCRIPTION_OF_GOODS_45A__c": "SHREDDED STEEL SCRAP ISRI 211 QTY: 500 MTS AT USD 425/MT ALL OTHER GOODS DETAILS AND SPECIFICATION ARE AS PER BENEFICIARY'S PROFORMA INVOICE NO. SO2604-22761/1 DATED: 08-04-2026 CFR PORT QASIM, PAKISTAN (INCOTERMS-2020)",
                 "DISCHARGE_PORT_44F__c": "PORT QASIM, PAKISTAN",
@@ -194,6 +195,30 @@ class SalesforceServiceTests(unittest.TestCase):
         self.assertTrue(payload_sight["AT_SIGHT__c"])
         self.assertEqual(payload_usance["DRAFTS_AT_42C__c"], "30 DAYS AFTER BL DATE")
         self.assertNotIn("AT_SIGHT__c", payload_usance)
+
+    def test_build_payload_maps_44e_country_to_coo_origin(self):
+        payload = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "44E": "ANY PORT IN NORWAY",
+                },
+            }
+        )
+
+        self.assertEqual(payload["LOADING_PORT_44E__c"], "ANY PORT IN NORWAY")
+        self.assertEqual(payload["COO_ORIGIN__c"], "Norway")
+
+    def test_build_payload_maps_multiple_44e_countries_to_coo_origin(self):
+        payload = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "44E": "NORWAY\\UK",
+                },
+            }
+        )
+
+        self.assertEqual(payload["LOADING_PORT_44E__c"], "NORWAY\\UK")
+        self.assertEqual(payload["COO_ORIGIN__c"], "Norway and UK")
 
     def test_build_required_payload_fields_uses_top_issuing_bank_when_present(self):
         parsed = {
