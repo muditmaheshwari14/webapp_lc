@@ -165,6 +165,36 @@ class SalesforceServiceTests(unittest.TestCase):
             },
         )
 
+    def test_build_payload_sets_at_sight_checkbox_from_42c(self):
+        payload_at_sight = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "42C": "AT SIGHT",
+                },
+            }
+        )
+        payload_sight = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "42C": "sight",
+                },
+            }
+        )
+        payload_usance = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "42C": "30 DAYS AFTER BL DATE",
+                },
+            }
+        )
+
+        self.assertEqual(payload_at_sight["DRAFTS_AT_42C__c"], "AT SIGHT")
+        self.assertTrue(payload_at_sight["AT_SIGHT__c"])
+        self.assertEqual(payload_sight["DRAFTS_AT_42C__c"], "sight")
+        self.assertTrue(payload_sight["AT_SIGHT__c"])
+        self.assertEqual(payload_usance["DRAFTS_AT_42C__c"], "30 DAYS AFTER BL DATE")
+        self.assertNotIn("AT_SIGHT__c", payload_usance)
+
     def test_build_required_payload_fields_uses_top_issuing_bank_when_present(self):
         parsed = {
             "advice_details": {

@@ -342,6 +342,11 @@ def _extract_unit_price(value: Any) -> float | None:
     return _parse_decimal_number(match.group(1))
 
 
+def _is_at_sight_draft(value: Any) -> bool:
+    normalized = re.sub(r"[^A-Z]", "", _normalize_whitespace(value).upper())
+    return normalized in {"ATSIGHT", "SIGHT"}
+
+
 def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -> dict[str, Any]:
     fields = _get_nested_value(parsed, "fields")
     advice_details = _get_nested_value(parsed, "advice_details")
@@ -422,7 +427,10 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
 
     drawee = _normalize_whitespace(_first_non_empty(fields.get("42A", ""), fields.get("42D", "")))
     set_field("DRAWEE_42A__c", drawee)
-    set_field("DRAFTS_AT_42C__c", _normalize_text(fields.get("42C", "")))
+    drafts_at = _normalize_text(fields.get("42C", ""))
+    set_field("DRAFTS_AT_42C__c", drafts_at)
+    if _is_at_sight_draft(drafts_at):
+        set_field("AT_SIGHT__c", True)
     set_field("PARTIAL_SHIPMENTS_43P__c", _normalize_text(fields.get("43P", "")))
     set_field("TRANSSHIPMENT_43T__c", _normalize_text(fields.get("43T", "")))
     set_field("FINAL_DESTINATION_44B__c", _normalize_whitespace(fields.get("44B", "")))
