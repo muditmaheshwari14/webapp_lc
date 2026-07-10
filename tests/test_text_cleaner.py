@@ -62,6 +62,19 @@ class SplitNumberedPointsTests(unittest.TestCase):
         self.assertTrue(points[0].startswith("1-"))
         self.assertTrue(points[-1].startswith("6-"))
 
+    def test_splits_lettered_inline_points(self):
+        value = (
+            "A. BENEFICIARY'S SIGNED COMMERCIAL INVOICE IN TRIPLICATE. "
+            "B. PACKING LIST IN THREE COPIES. "
+            "C. CERTIFICATE OF ORIGIN."
+        )
+
+        points = split_numbered_points(value)
+
+        self.assertEqual(len(points), 3)
+        self.assertTrue(points[0].startswith("A."))
+        self.assertTrue(points[-1].startswith("C."))
+
     def test_keeps_nested_subpoints_inside_parent_point(self):
         value = (
             "+1. COMMERCIAL INVOICE. "
@@ -106,6 +119,24 @@ class SplitNumberedPointsTests(unittest.TestCase):
         self.assertEqual(len(points), 3)
         self.assertEqual(points[0], "1) DRAFT AND INVOICE MUST INDICATE THIS LC NUMBER.")
         self.assertEqual(points[-1], "3) NEGOTIATION UNDER RESERVE/GUARANTEE NOT ALLOWED.")
+
+    def test_field_value_to_points_preserves_lettered_bullets(self):
+        value = (
+            "A. BENEFICIARY'S SIGNED COMMERCIAL INVOICE IN TRIPLICATE. "
+            "B. PACKING LIST IN THREE COPIES. "
+            "C. CERTIFICATE OF ORIGIN."
+        )
+
+        points = field_value_to_points("46A", value)
+
+        self.assertEqual(
+            points,
+            [
+                "A. BENEFICIARY'S SIGNED COMMERCIAL INVOICE IN TRIPLICATE.",
+                "B. PACKING LIST IN THREE COPIES.",
+                "C. CERTIFICATE OF ORIGIN.",
+            ],
+        )
 
 
 if __name__ == "__main__":

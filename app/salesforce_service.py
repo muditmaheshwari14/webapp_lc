@@ -256,6 +256,12 @@ def _split_available_with_by(value: Any) -> tuple[str, str]:
     if not text:
         return "", ""
 
+    text = re.sub(
+        r"^AVAILABLE\s+WITH\s*\.\.\.\s*BY\s*\.\.\.\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"^\(?\s*NAME\s+AND\s+ADDRESS\s*\)?\s*", "", text, flags=re.IGNORECASE)
     parts = re.split(r"\bBY\b", text, maxsplit=1, flags=re.IGNORECASE)
 
@@ -488,7 +494,9 @@ def build_phase_one_letter_of_credit_payload_fields(parsed: Mapping[str, Any]) -
         _normalize_text(fields.get("40A", "")),
     )
 
-    available_with, available_by = _split_available_with_by(fields.get("41D", ""))
+    available_with, available_by = _split_available_with_by(
+        _first_non_empty(fields.get("41D", ""), fields.get("41A", ""))
+    )
     set_field("AVAILABLE_WITH_41D__c", available_with)
     set_field("AVAILABLE_BY_41D__c", available_by)
 

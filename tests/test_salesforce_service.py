@@ -196,6 +196,21 @@ class SalesforceServiceTests(unittest.TestCase):
         self.assertEqual(payload_usance["DRAFTS_AT_42C__c"], "30 DAYS AFTER BL DATE")
         self.assertNotIn("AT_SIGHT__c", payload_usance)
 
+    def test_build_payload_uses_41a_when_41d_is_missing(self):
+        payload = build_letter_of_credit_payload(
+            {
+                "fields": {
+                    "41A": "Available With...By...\nHBZUGB2L\nHABIB BANK ZURICH PLC\nLONDON GB\nBY NEGOTIATION",
+                },
+            }
+        )
+
+        self.assertEqual(
+            payload["AVAILABLE_WITH_41D__c"],
+            "HBZUGB2L HABIB BANK ZURICH PLC LONDON GB",
+        )
+        self.assertEqual(payload["AVAILABLE_BY_41D__c"], "NEGOTIATION")
+
     def test_build_payload_maps_44e_country_to_coo_origin(self):
         payload = build_letter_of_credit_payload(
             {

@@ -16,6 +16,16 @@ POINT_MARKER_PATTERN = re.compile(
     """,
     re.VERBOSE,
 )
+LETTER_POINT_MARKER_PATTERN = re.compile(
+    r"""
+    (?m)
+    (?<![A-Za-z0-9])
+    (?P<letter>[A-Z])
+    \.
+    (?=\s|[A-Za-z])
+    """,
+    re.VERBOSE,
+)
 LEADING_POINT_MARKER_PATTERN = re.compile(
     r"^\s*[+*]?\s*(\d{1,2})\s*[.)-]\s*",
 )
@@ -69,6 +79,7 @@ def remove_leading_field_label(code: str, value: str) -> str:
         "59": ("Beneficiary",),
         "32B": ("Currency Code, Amount",),
         "39A": ("Percentage Credit Amount Tolerance",),
+        "41A": ("Available With ... By ...", "Available With... By..."),
         "41D": ("Available With ... By ...", "Available With... By..."),
         "42C": ("Drafts At", "Drafts at"),
         "42A": ("Drawee",),
@@ -149,6 +160,21 @@ def _find_point_candidates(text: str):
                 "prefix": prefix,
                 "delimiter": match.group("delimiter"),
                 "line_start": _is_line_start(text, marker_start),
+                "sequence_type": "numeric",
+            }
+        )
+
+    for match in LETTER_POINT_MARKER_PATTERN.finditer(text):
+        marker_start = match.start()
+
+        candidates.append(
+            {
+                "start": marker_start,
+                "number": ord(match.group("letter").upper()) - ord("A") + 1,
+                "prefix": "",
+                "delimiter": ".",
+                "line_start": _is_line_start(text, marker_start),
+                "sequence_type": "alpha",
             }
         )
 
@@ -202,6 +228,8 @@ def _build_best_chain(candidates):
 
         for next_idx in range(idx + 1, len(filtered_candidates)):
             next_candidate = filtered_candidates[next_idx]
+            if next_candidate["sequence_type"] != current["sequence_type"]:
+                continue
             if next_candidate["number"] != current["number"] + 1:
                 continue
 
