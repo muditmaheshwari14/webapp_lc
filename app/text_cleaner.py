@@ -29,6 +29,9 @@ LETTER_POINT_MARKER_PATTERN = re.compile(
 LEADING_POINT_MARKER_PATTERN = re.compile(
     r"^\s*[+*]?\s*(\d{1,2})\s*[.)-]\s*",
 )
+BARE_BULLET_LINE_PATTERN = re.compile(
+    r"(?m)^[ \t]*(?P<bullet>[+*])(?=[ \t]+\S)",
+)
 
 
 def clean_text(text: str) -> str:
@@ -103,18 +106,27 @@ def remove_leading_field_label(code: str, value: str) -> str:
     if not prefixes:
         return value.strip()
 
-    normalized_value = " ".join(value.split())
     for prefix in prefixes:
-        normalized_prefix = " ".join(prefix.split())
-        if normalized_value.lower().startswith(normalized_prefix.lower()):
-            trimmed = normalized_value[len(normalized_prefix):].strip(" :.-")
+        prefix_parts = re.split(r"\s+", prefix.strip())
+        prefix_pattern = r"^\s*" + r"\s+".join(
+            re.escape(part) for part in prefix_parts
+        )
+        match = re.match(prefix_pattern, value, flags=re.IGNORECASE)
+        if match:
+            # Remove only the leading label. Keeping the remaining newlines is
+            # important because some banks use an unnumbered '+' on each
+            # original line as the only point boundary.
+            trimmed = value[match.end():].lstrip()
+            trimmed = re.sub(r"^[:.-]\s*", "", trimmed, count=1)
             trimmed = re.sub(
                 r"^\(\s*NAME\s+AND\s+ADDRESS\s*\)\s*",
                 "",
                 trimmed,
                 flags=re.IGNORECASE,
             )
-            return trimmed
+            if get_base_field_code(code) in POINT_STRUCTURED_CODES:
+                return trimmed
+            return " ".join(trimmed.split())
 
     return value.strip()
 
@@ -179,6 +191,31 @@ def _find_point_candidates(text: str):
         )
 
     return candidates
+
+
+def _find_bare_bullet_positions(text: str):
+    """Return line-start '+'/'*' bullets, excluding inline text such as '+/-'."""
+    return [
+        match.start("bullet")
+        for match in BARE_BULLET_LINE_PATTERN.finditer(text)
+    ]
+
+
+def _split_at_positions(text: str, split_positions):
+    parts = []
+
+    if split_positions[0] > 0:
+        leading_text = text[:split_positions[0]].strip()
+        if leading_text:
+            parts.append(leading_text)
+
+    for idx, start_pos in enumerate(split_positions):
+        end_pos = split_positions[idx + 1] if idx + 1 < len(split_positions) else len(text)
+        part = text[start_pos:end_pos].strip()
+        if part:
+            parts.append(part)
+
+    return parts
 
 
 def _candidate_modes(candidates):
@@ -277,12 +314,14 @@ def _score_chain(chain):
 
 def split_numbered_points(value: str):
     """
-    Split text into numbered items like:
+    Split text into structured items such as:
     1.
     2)
     3)
     4-
     +5.
+    + an unnumbered line bullet
+    * another unnumbered line bullet
     Also handles text before the first numbered item and prefers
     the dominant top-level sequence when nested sub-points exist.
     """
@@ -291,6 +330,20 @@ def split_numbered_points(value: str):
 
     text = value.strip()
     candidates = _find_point_candidates(text)
+    bare_bullet_positions = _find_bare_bullet_positions(text)
+
+    # A bare bullet at an original line start is a stronger top-level signal
+    # than numbered text embedded later in that bullet. If a numbered/lettered
+    # top-level sequence starts earlier, leave the existing sequence selection
+    # logic in charge so its nested-point behavior remains unchanged.
+    standard_line_starts = [
+        candidate["start"] for candidate in candidates if candidate["line_start"]
+    ]
+    if bare_bullet_positions and (
+        not standard_line_starts
+        or bare_bullet_positions[0] < min(standard_line_starts)
+    ):
+        return _split_at_positions(text, bare_bullet_positions)
 
     if not candidates:
         return [text]
@@ -322,20 +375,7 @@ def split_numbered_points(value: str):
     if not split_positions:
         return [text]
 
-    parts = []
-
-    if split_positions[0] > 0:
-        leading_text = text[:split_positions[0]].strip()
-        if leading_text:
-            parts.append(leading_text)
-
-    for idx, start_pos in enumerate(split_positions):
-        end_pos = split_positions[idx + 1] if idx + 1 < len(split_positions) else len(text)
-        part = text[start_pos:end_pos].strip()
-        if part:
-            parts.append(part)
-
-    return parts
+    return _split_at_positions(text, split_positions)
 
 
 def renumber_point_for_display(point_text: str) -> str:
@@ -360,12 +400,19 @@ def format_field_for_display(code: str, value: str) -> str:
     value = remove_classification_lines(value)
     value = remove_dot_separator_lines(value)
     value = normalize_general_value(value)
+    value_with_label = value
     value = remove_leading_field_label(base_code, value)
+    leading_label_was_removed = value != value_with_label.strip()
 
     if base_code in POINT_STRUCTURED_CODES:
         points = split_numbered_points(value)
         if points:
             points = [renumber_point_for_display(p) for p in points]
+            if leading_label_was_removed:
+                # Historically, values carrying a printed field label were
+                # unwrapped into one line. Split first so bare line bullets are
+                # not lost, then retain that output contract within each item.
+                points = [" ".join(point.split()) for point in points]
             return "\n\n".join(points)
 
     return value.strip()
@@ -373,7 +420,7 @@ def format_field_for_display(code: str, value: str) -> str:
 
 def field_value_to_points(code: str, value: str):
     """
-    Return a list of numbered points for structured fields.
+    Return a list of detected clauses for structured fields.
     For non-structured fields, returns [].
     """
     if get_base_field_code(code) not in POINT_STRUCTURED_CODES or not value:

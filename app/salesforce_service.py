@@ -105,6 +105,27 @@ def _extract_first_integer(value: Any) -> int | None:
     return int(match.group())
 
 
+def with_manual_field_48(
+    parsed: Mapping[str, Any],
+    manual_value: Any,
+) -> dict[str, Any]:
+    """Return a parsed-document copy with a validated manual SWIFT field 48."""
+    value = _normalize_text(manual_value)
+    period_match = re.match(r"^(\d+)", value)
+    if period_match is None or int(period_match.group(1)) <= 0:
+        raise ValueError(
+            "Field 48 must start with a positive number of days, for example "
+            "'21' or '21/FROM B/L DATE'."
+        )
+
+    updated_parsed = dict(parsed or {})
+    existing_fields = updated_parsed.get("fields", {})
+    updated_fields = dict(existing_fields) if isinstance(existing_fields, Mapping) else {}
+    updated_fields["48"] = value
+    updated_parsed["fields"] = updated_fields
+    return updated_parsed
+
+
 def _normalize_iso_date(value: Any) -> str:
     text = _normalize_text(value)
     if not text:

@@ -28,10 +28,32 @@ from salesforce_service import (
     create_letter_of_credit_with_checklists_from_config,
     load_salesforce_config,
     parse_additional_fields_json,
+    with_manual_field_48,
 )
 
 
 class SalesforceServiceTests(unittest.TestCase):
+    def test_with_manual_field_48_adds_value_without_mutating_parsed_document(self):
+        parsed = {
+            "fields": {"20": "LC-001"},
+            "advice_details": {"our_ref": "REF-001"},
+        }
+
+        updated = with_manual_field_48(parsed, "21/FROM B/L DATE")
+        payload = build_letter_of_credit_payload(updated)
+
+        self.assertNotIn("48", parsed["fields"])
+        self.assertEqual(updated["fields"]["20"], "LC-001")
+        self.assertEqual(updated["fields"]["48"], "21/FROM B/L DATE")
+        self.assertEqual(updated["advice_details"], parsed["advice_details"])
+        self.assertEqual(payload["PERIOD_FOR_PRESENTATION_48__c"], 21)
+
+    def test_with_manual_field_48_rejects_missing_or_non_positive_days(self):
+        for manual_value in ("", "DAYS AFTER SHIPMENT", "0", "-1 DAYS"):
+            with self.subTest(manual_value=manual_value):
+                with self.assertRaisesRegex(ValueError, "positive number of days"):
+                    with_manual_field_48({"fields": {}}, manual_value)
+
     def test_build_payload_maps_our_ref(self):
         parsed = {
             "advice_details": {

@@ -87,6 +87,62 @@ ELC/SHB/141
 """.strip()
 
 
+ATTACHED_BARE_BULLET_TEXT = """
+Our Reference No.: DCAUKA013343
+:46A:Documents Required
+:   :+ 3 ORIGINALS OF COMMERCIAL INVOICE ISSUED BY THE BENEFICIARY
+:   :BASED ON NET WEIGHT.
+:   :+ FULL SET (3/3) OF ORIGINAL CLEAN SHIPPED ON BOARD BILL OF
+:   :LADING, MARKED 'FREIGHT PREPAID' AND SHOWING HS CODE: 72044900.
+:   :+ 3 ORIGINALS OF DETAILED PACKING LIST ISSUED BY THE BENEFICIARY
+:   :SHOWING CONTAINER NO., CONTAINER SIZE, SEAL NO., TOTAL
+:   :CONTAINER, TOTAL NET WEIGHT OF EACH CONTAINER AND TOTAL NET
+HSBC UK Bank plc, Global Trade Solutions
+T: 0345 600 1522
+Registered in England number 09928412. Registered Office: 1 Centenary Square, Birmingham B1 1HQ
+HSBC UK Bank plc is authorised by the Prudential Regulation Authority and regulated by the Financial
+Conduct Authority and Prudential Regulation Authority
+Page 4 / 6
+DCAUKA013343
+:   :WEIGHT OF EACH SHIPMENT.
+:   :+ 03 ORIGINALS CERTIFICATE OF ORIGIN ISSUED BY THE BENEFICIARY.
+:   :+ 03 ORIGINALS CERTIFICATE OF QUALITY AND QUANTITY ISSUED BY THE
+:   :BENEFICIARY CERTIFYING THAT THE CARGO COMPLIES WITH ARTICLE 1 OF
+:   :THE CONTRACT NO. TMS-NBA-01.2026 DATED 25TH AUG, 2026
+:   :+ 03 ORIGINALS CERTIFICATE OF NON-RADIOACTIVE MATERIAL AND
+:   :NON-EXPLOSIVE ISSUED BY THE BENEFICIARY
+:47A:Additional Conditions
+:   :+ DOCUMENTS TO BE PRESENTED WITHIN 21 DAYS AFTER THE SHIPMENT
+:   :DATE BUT WITHIN THE VALIDITY OF THE CREDIT.
+:   :+ ALL DOCUMENTS MUST BE PRESENTED IN TRIPLICATE (UNLESS
+:   :OTHERWISE STATED) INDICATED CREDIT NUMBER AND ISSUING DATE.
+:   :+ ALL DOCUMENTS MUST BE ISSUED IN ENGLISH
+:   :+ T.T.R NOT ALLOWED
+:   :+ THIRD PARTY DOCUMENTS ALLOWED EXCEPT COMMERCIAL INVOICE AND
+:   :DRAFT.
+:   :+ BL MUST SHOW FULL PARTICULARS OF THE SHIPPING AGENT IN VIETNAM.
+:   :+ PARTIAL SHIPMENT ALLOWED (MAX 2 SHIPMENTS)
+:   :+ BL MUST BE ISSUED BY THE SHIPPING LINE OR SHIPPING LINE'S
+:   :AGENT.
+:   :+ DRAFT MUST BE ISSUED FOR EACH SET OF SHIPPING DOCUMENT.
+:   :+ ALL DOCUMENT DATE (EXCEPT B/L) MUST BE ON OR BEFORE THE ON
+:   :BOARD DATE
+:   :+ APPLICANT ADDRESS:BLOCK A5, D2 STREET, DAT CUOC INDUSTRIAL
+:   :PARK (ZONE B), BAC TAN UYEN COMMUNE, HO CHI MINH CITY, VIETNAM
+:   :+ ONE ADDITIONAL COPY/PHOTOCOPY OF ALL REQUIRED DOCUMENTS TO BE
+:   :PRESENTED FOR L/C ISSUING BANK'S FILE.
+:   :+ A DISCREPANCY FEE OF USD88.00 SHOULD BE DEDUCTED FROM THE
+:   :PROCEEDS FOR ALL DOCUMENTS NEGOTIATED WITH DISCREPANCIES.
+:   :+ IF THE TRANSACTION IS WITHIN THE SCOPE OF ANY OF THE
+:   :REGULATIONS OF EUROPEAN UNION, UNITED NATIONS OR OFAC CONCERNING
+:   :RESTRICTIVE MEASURES AND SANCTIONS.
+:   :+ DOCUMENTS OR SWIFT MESSAGE ARRIVING AT ISSUING BANK'S COUNTER
+:   :LATER THAN 03.00 PM ON BANKING DAY WILL BE RECEIVED NEXT DAY.
+:71D:Charges
+:   :BANKING CHARGES OUTSIDE VIETNAM ARE FOR ACCOUNT OF BENEFICIARY
+""".strip()
+
+
 class SwiftParserTests(unittest.TestCase):
     def test_parses_uk_split_colon_format_and_ignores_page_footers(self):
         parsed = parse_lc_document(UK_STYLE_TEXT)
@@ -133,6 +189,20 @@ class SwiftParserTests(unittest.TestCase):
         )
         self.assertNotIn("CHK:", parsed["fields"]["78"])
         self.assertNotIn("***End of Message***", parsed["fields"]["78"])
+
+    def test_splits_attached_lc_bare_bullets_and_preserves_page_continuation(self):
+        parsed = parse_lc_document(ATTACHED_BARE_BULLET_TEXT)
+
+        documents = field_value_to_points("46A", parsed["fields"]["46A"])
+        conditions = field_value_to_points("47A", parsed["fields"]["47A"])
+
+        self.assertEqual(len(documents), 6)
+        self.assertEqual(len(conditions), 15)
+        self.assertIn("BASED ON NET WEIGHT.", documents[0])
+        self.assertIn("TOTAL NET WEIGHT OF EACH SHIPMENT.", documents[2])
+        self.assertNotIn("Page 4 / 6", documents[2])
+        self.assertEqual(conditions[3], "+ T.T.R NOT ALLOWED")
+        self.assertTrue(conditions[-1].startswith("+ DOCUMENTS OR SWIFT MESSAGE"))
 
 
 if __name__ == "__main__":

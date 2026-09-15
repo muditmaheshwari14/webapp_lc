@@ -16,6 +16,7 @@ from salesforce_service import (
     find_duplicate_letter_of_credit_records_from_config,
     load_salesforce_config,
     parse_additional_fields_json,
+    with_manual_field_48,
 )
 from export_services import (
     dataframe_to_csv_bytes,
@@ -257,7 +258,11 @@ def get_selected_checklist_points(document_key: str, code: str, points: list[str
 
 
 def strip_leading_point_marker(text: str) -> str:
-    cleaned = re.sub(r"^\s*[+*]?\s*\d{1,2}\s*[.)-]\s*", "", str(text or "")).strip()
+    cleaned = re.sub(
+        r"^\s*(?:[+*]\s+|[+*]?\s*\d{1,2}\s*[.)-]\s*)",
+        "",
+        str(text or ""),
+    ).strip()
     return cleaned or str(text or "").strip()
 
 
@@ -344,7 +349,67 @@ def render_salesforce_sync_section(
         additional_fields_error = str(exc)
         st.error(additional_fields_error)
 
-    payload = build_letter_of_credit_payload(parsed, additional_fields)
+    effective_parsed = parsed
+    parsed_fields = parsed.get("fields", {})
+    if not isinstance(parsed_fields, dict):
+        parsed_fields = {}
+
+    extracted_field_48 = str(parsed_fields.get("48", "") or "").strip()
+    extracted_payload = build_letter_of_credit_payload(parsed)
+    mapped_field_48 = extracted_payload.get("PERIOD_FOR_PRESENTATION_48__c")
+    field_48_is_usable = (
+        isinstance(mapped_field_48, int)
+        and not isinstance(mapped_field_48, bool)
+        and mapped_field_48 > 0
+    )
+    manual_field_48_applied = False
+
+    if not field_48_is_usable:
+        field_48_status = st.empty()
+        manual_field_48 = st.text_input(
+            "Field 48 - Period for Presentation",
+            key=f"salesforce_manual_field_48_{document_key}",
+            placeholder="For example: 21 or 21/FROM B/L DATE",
+            help=(
+                "Enter a positive number of days at the start. This value is used for "
+                "Salesforce only when the LC has no usable field 48."
+            ),
+        )
+
+        if manual_field_48.strip():
+            try:
+                effective_parsed = with_manual_field_48(parsed, manual_field_48)
+            except ValueError as exc:
+                field_48_status.error(str(exc))
+            else:
+                field_48_is_usable = True
+                manual_field_48_applied = True
+                field_48_status.success(
+                    "The manual field 48 value will be used for Salesforce sync."
+                )
+        else:
+            if not extracted_field_48:
+                field_48_status.error(
+                    "SWIFT field 48 (Period for Presentation) is missing from this LC. "
+                    "Salesforce requires it, so enter the value manually before creating "
+                    "the record."
+                )
+            else:
+                field_48_status.error(
+                    "SWIFT field 48 was extracted, but it does not contain a positive "
+                    "presentation period. Enter a corrected value manually before creating "
+                    "the Salesforce record."
+                )
+            st.caption(
+                "The Salesforce create button will remain disabled until field 48 is supplied."
+            )
+
+    effective_additional_fields = dict(additional_fields)
+    if manual_field_48_applied:
+        # A document-specific correction must take precedence over configured defaults.
+        effective_additional_fields.pop("PERIOD_FOR_PRESENTATION_48__c", None)
+
+    payload = build_letter_of_credit_payload(effective_parsed, effective_additional_fields)
     selected_checklist_points_by_code = {
         code: get_selected_checklist_points(document_key, code, points)
         for code, points in checklist_points_by_code.items()
@@ -438,6 +503,7 @@ def render_salesforce_sync_section(
         salesforce_config is None
         or bool(additional_fields_error)
         or not payload
+        or not field_48_is_usable
         or bool(missing_required_fields)
         or (bool(duplicate_records) and not proceed_with_duplicate)
     )
@@ -527,7 +593,10 @@ def main():
     show_summary_cards(summary)
 
     st.subheader("46A / 47A Checklist")
-    st.caption("The checklist is generated from the numbered points found in the uploaded LC.")
+    st.caption(
+        "The checklist is generated from numbered, lettered, or line-bulleted clauses "
+        "found in the uploaded LC."
+    )
 
     checklist_points_by_code = {
         code: get_checklist_points(parsed, code)

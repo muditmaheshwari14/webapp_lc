@@ -93,6 +93,35 @@ class SplitNumberedPointsTests(unittest.TestCase):
         self.assertIn("1) MARINE COVER NOTE NUMBER", points[1])
         self.assertTrue(points[2].startswith("+3."))
 
+    def test_splits_bare_line_bullets_and_keeps_wrapped_lines(self):
+        value = (
+            "+ FIRST DOCUMENT FOR THE FULL AMOUNT (+/- 5PCT)\n"
+            "WITH A WRAPPED CONTINUATION LINE.\n"
+            "+ SECOND DOCUMENT.\n"
+            "* THIRD DOCUMENT WITH AN ASTERISK BULLET."
+        )
+
+        points = split_numbered_points(value)
+
+        self.assertEqual(len(points), 3)
+        self.assertIn("(+/- 5PCT)", points[0])
+        self.assertIn("\nWITH A WRAPPED CONTINUATION LINE.", points[0])
+        self.assertTrue(points[1].startswith("+ SECOND"))
+        self.assertTrue(points[2].startswith("* THIRD"))
+
+    def test_field_label_removal_preserves_bare_bullet_line_boundaries(self):
+        raw_value = (
+            "Additional Conditions\n"
+            "+ FIRST CONDITION.\n"
+            "+ T.T.R NOT ALLOWED"
+        )
+
+        formatted = format_field_for_display("47A", raw_value)
+        points = field_value_to_points("47A", formatted)
+
+        self.assertEqual(points, ["+ FIRST CONDITION.", "+ T.T.R NOT ALLOWED"])
+        self.assertIn("\n\n+ T.T.R NOT ALLOWED", formatted)
+
     def test_field_value_to_points_normalizes_display_numbering(self):
         value = (
             "1- BENEFICIARYS SIGNED COMMERCIAL INVOICE. "
